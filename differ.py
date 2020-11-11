@@ -2,6 +2,15 @@ from typing import List, Any, Callable, Tuple, Union
 from itertools import zip_longest
 import re
 import difflib
+import html
+import numpy as np
+
+
+try:
+    from IPython.display import display
+    from IPython.display import HTML
+except:
+    print("No IPython detected, cannot show diffs using show_diffs()")
 
 
 Token = str
@@ -78,22 +87,19 @@ def align_seqs(a: TokenList, b: TokenList, fill:Token='') -> Tuple[TokenList, To
 def diff_ratio(a: str, b: str, fill:Token='',       
                isjunk:Union[None, Callable[[Token], bool]]=None) -> float:
     ratios = []
-    diffs = []
+    redundant_tokens = []
+    total_tokens = []
     for sent_a, sent_b in zip_longest(*align_seqs(sentencize(a), sentencize(b))):
-        ratios.append(difflib.SequenceMatcher(isjunk=isjunk, a=tokenize(sent_a), 
-                                              b=tokenize(b), autojunk=False).ratio())
-        diffs.append(difflib.SequenceMatcher(isjunk=isjunk, a=tokenize(sent_a), 
-                                              b=tokenize(b), autojunk=False).get_opcodes())
-    return sum(ratios) / len(ratios)
-
-
-def diff_quick_ratio(a: str, b: str, fill:Token='',       
-               isjunk:Union[None, Callable[[Token], bool]]=None) -> float:
-    ratios = []
-    for sent_a, sent_b in zip_longest(*align_seqs(sentencize(a), sentencize(b))):
-        ratios.append(difflib.SequenceMatcher(isjunk=isjunk, a=tokenize(sent_a), 
-                                              b=tokenize(b), autojunk=False).quick_ratio())
-    return sum(ratios) / len(ratios)
+        tok_sent_a, tok_sent_b = tokenize(sent_a), tokenize(sent_b)
+        sent_ratio = difflib.SequenceMatcher(isjunk=isjunk, a=tok_sent_a, 
+                                             b=tok_sent_b, autojunk=False).ratio()
+        ratios.append(sent_ratio)
+        total_tokens.append(len(tok_sent_a))
+        # inverse of ratio calc as shown: 
+        # https://docs.python.org/3.7/library/difflib.html#difflib.SequenceMatcher.ratio
+        redundant_tokens.append(sent_ratio / 2 * (len(tok_sent_a) + len(tok_sent_b)))
+        
+    return sum(ratios) / len(ratios), np.std(ratios), max(ratios), min(ratios), sum(redundant_tokens), sum(total_tokens)
 
 
 def html_sidebyside(a, b):
@@ -106,7 +112,6 @@ def html_sidebyside(a, b):
     out += '</div>'
     return out
 
-import html
 def html_diffs(a, b):
     a = html.escape(a)
     b = html.escape(b)
@@ -119,3 +124,6 @@ def html_diffs(a, b):
 
     return html_sidebyside(out_a, out_b)
 
+
+def show_diffs(a, b):
+    display(HTML(html_diffs(a,b)))
