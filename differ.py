@@ -4,6 +4,10 @@ import re
 import difflib
 import html
 import numpy as np
+import pandas as pd
+from datasets import list_metrics, load_metric
+from collections import defaultdict
+from itertools import chain
 
 
 try:
@@ -100,6 +104,141 @@ def diff_ratio(a: str, b: str, fill:Token='',
         redundant_tokens.append(sent_ratio / 2 * (len(tok_sent_a) + len(tok_sent_b)))
         
     return sum(ratios) / len(ratios), np.std(ratios), max(ratios), min(ratios), sum(redundant_tokens), sum(total_tokens)
+
+
+def compute_sequential_diff_metrics(notes: pd.DataFrame, sort_cols=['hadm_id', 'chartdate', 'charttime', 'category', 'description'], groupby_cols=['hadm_id', 'category', 'description']) -> pd.DataFrame:
+    """
+    Given a DataFrame of notes (with mimic3 formatted columns) compute token, rouge, and bert-score sequential diffs.
+    """
+    internote_sort_cols = sort_cols
+    internote_group_cols = groupby_cols
+    results = defaultdict(list)
+    rouge_metric = load_metric('rouge')
+    for k, g in notes.groupby(internote_group_cols):
+        bert_metric = load_metric('bertscore')
+        if g.shape[0] > 1:
+            ratios, std_devs, max_ratios, min_ratios, redundant_toks, total_tokens = [], [], [], [], [], []
+            for i in range(len(g.text.tolist()) - 1):
+                ratio, std_dev, max_ratio, min_ratio, redundant_toks_len, total_toks = \
+                    diff_ratio(g.text.iloc[i], g.text.iloc[i+1])
+                rouge_metric.add(prediction=g.text.iloc[i+1], reference=g.text.iloc[i])
+                bert_metric.add(prediction=g.text.iloc[i+1], reference=g.text.iloc[i])
+                ratios.append(ratio)
+                std_devs.append(std_dev)
+                max_ratios.append(max_ratio)
+                min_ratios.append(min_ratio)
+                redundant_toks.append(redundant_toks_len)
+                total_tokens.append(total_toks)
+            results['diff_ratios'].append(ratios)
+            results['max_ratios'].append(max(max_ratios))
+            results['min_ratios'].append(min(min_ratios))
+            results['redundant_toks'].append(sum(redundant_toks))
+            results['total_tokens'].append(sum(total_tokens))
+            results['avg_diff_ratio'].append(sum(ratios) / len(ratios))
+            txt_lens = g.text.apply(len)
+            results['avg_txt_len'].append(sum(txt_lens) / len(txt_lens))
+            results['hadm_id'].append(k[0])
+            results['category'].append(k[1])
+            results['description'].append(k[2])
+            # compute batched summarisation metrics
+            rougeL = rouge_metric.compute(rouge_types=['rougeL'], use_agregator=False)['rougeL']
+            try:
+                bert_scores = bert_metric.compute(lang='en', rescale_with_baseline=True, model_type='xlnet-base-cased')
+                _compute_bert_score_stats(bert_scores, 'recall', results)
+                _compute_bert_score_stats(bert_scores, 'precision', results)
+            except Exception as e:
+                # Failure due to cuda memory..
+                print(f"Failure computing bert-score for group {k}: {e}")
+                _add_nan_bert_scores('precision', results)
+                _add_nan_bert_scores('recall',  results)
+            _compute_rouge_stats(rougeL, 'recall', results)
+            _compute_rouge_stats(rougeL, 'precision', results)
+           
+    return pd.DataFrame(results)
+
+def _compute_rouge_stats(scores: list, prop: str, results: dict):
+    measure = [getattr(l, prop) for l in scores]
+    results[f'rg_{prop}'].append(measure)
+    results[f'rg_{prop}_avg'].append(np.average(measure))
+    results[f'rg_{prop}_med'].append(np.median(measure))
+    results[f'rg_{prop}_iqr'].append(np.subtract(*np.percentile(measure, [75, 25])))
+
+def _compute_bert_score_stats(scores: list, prop: str, results):
+    results[f'bs_{prop}'].append(scores[prop])
+    results[f'bs_{prop}_avg'].append(np.average(scores[prop]))
+    results[f'bs_{prop}_med'].append(np.median(scores[prop]))
+    results[f'bs_{prop}_iqr'].append(np.subtract(*np.percentile(scores[prop], [75, 25])))
+
+def _add_nan_bert_scores(prop: str, results: dict):
+    results[f'bs_{prop}'].append(np.nan)
+    results[f'bs_{prop}_avg'].append(np.nan)
+    results[f'bs_{prop}_med'].append(np.nan)
+    results[f'bs_{prop}_iqr'].append(np.nan)
+    
+
+def split_notes(notes, splitter='------\n------\n------\n'):
+    care_notes = defaultdict(list)
+    discharge_notes = defaultdict(list)
+    for adm, df in notes.sort_values(['hadm_id', 'chartdate', 'charttime']).groupby('hadm_id'):
+        dis_notes = df[(df.category == 'Discharge summary') & (df.description != 'Addendum')].text.tolist()
+        care_df = df[df.category != 'Discharge summary']
+        if len(dis_notes) == 0 or care_df.shape[0] == 0:
+            continue
+
+        hadm_id = care_df.hadm_id.iloc[0]
+        # pick first as there are rarely 2 summaries??
+
+        discharge_notes['hadm_id'].append(hadm_id)
+        discharge_notes['text'].append(dis_notes[0])
+        # ignore addendums - as not sure what section they are in.
+
+        care_notes['hadm_id'].append(hadm_id)
+        care_notes['text'].append(care_df.text.str.cat(sep=splitter))
+        care_notes['first_time'].append(care_df.iloc[0].charttime or care_df.iloc[0].chartdate)
+        care_notes['last_time'].append(care_df.iloc[-1].charttime or care_df.iloc[-1].chartdate)
+        care_notes['categories'].append(care_df.category.tolist())
+        care_notes['descriptions'].append(care_df.description.tolist())
+        care_notes['icd_code'].append(care_df.icd9_code.iloc[0])
+    care_notes_df = pd.DataFrame(care_notes)
+    discharge_notes_df = pd.DataFrame(discharge_notes)
+    return care_notes_df, discharge_notes_df
+
+
+def compute_avgs(results_df: pd.DataFrame) -> pd.DataFrame:
+    cat_desc_avg = defaultdict(list)
+    for k, df in results_df.groupby(['category', 'description']):
+        cat_desc_avg['cat_desc'].append(f'{k[0]}:{k[1]}')
+        cat_desc_avg['redundant_toks'].append(sum(df.redundant_toks))
+        cat_desc_avg['total_toks'].append(sum(df.total_tokens))
+        cat_desc_avg['avg_txt_len'].append(np.average(df.avg_txt_len))
+        cat_desc_avg['macro_avg'].append(np.average(df.avg_diff_ratio))
+        
+        d_r = list(chain.from_iterable(df.diff_ratios))
+        cat_desc_avg['micro_avg'].append(np.average(d_r))
+        cat_desc_avg['num_instances'].append(len(d_r))
+        # micro avgs of median / iqr
+        rg_rec = list(chain.from_iterable(df.rg_recall))
+        rg_prec = list(chain.from_iterable(df.rg_precision))
+        cat_desc_avg['rg_recall_avg'].append(np.average(rg_rec))
+        cat_desc_avg['rg_recall_med'].append(np.median(rg_rec))
+        cat_desc_avg['rg_recall_iqr'].append(np.subtract(*np.percentile(rg_rec, [75, 25])))
+        cat_desc_avg['rg_precision_avg'].append(np.average(rg_prec))
+        cat_desc_avg['rg_precision_med'].append(np.median(rg_prec))
+        cat_desc_avg['rg_precision_iqr'].append(np.subtract(*np.percentile(rg_prec, [75, 25])))
+        
+        bs_rec = list(chain.from_iterable(df.bs_recall))
+        bs_prec = list(chain.from_iterable(df.bs_precision))
+        cat_desc_avg['bs_recall_avg'].append(np.average(bs_rec))
+        cat_desc_avg['bs_recall_med'].append(np.median(bs_rec))
+        cat_desc_avg['bs_recall_iqr'].append(np.subtract(*np.percentile(bs_rec, [75, 25])))
+        cat_desc_avg['bs_precision_avg'].append(np.average(bs_prec))
+        cat_desc_avg['bs_precision_med'].append(np.median(bs_prec))
+        cat_desc_avg['bs_precision_iqr'].append(np.subtract(*np.percentile(bs_prec, [75, 25])))
+    group_avgs = pd.DataFrame(cat_desc_avg)
+    group_avgs = group_avgs[~group_avgs.cat_desc.str.contains('Discharge summary')]
+    group_avgs = group_avgs[group_avgs['num_instances'] > 5]
+    group_avgs = group_avgs.sort_values('num_instances', ascending=False).reset_index(drop=True).head(20)
+    return group_avgs
 
 
 def html_sidebyside(a, b):
