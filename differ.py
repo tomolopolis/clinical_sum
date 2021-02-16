@@ -206,34 +206,38 @@ def split_notes(notes, splitter='------\n------\n------\n'):
 
 def compute_avgs(results_df: pd.DataFrame) -> pd.DataFrame:
     cat_desc_avg = defaultdict(list)
+    # remove where no bert_score is found
+    results_df = results_df[~pd.isna(results_df.bs_recall)]
     for k, df in results_df.groupby(['category', 'description']):
         cat_desc_avg['cat_desc'].append(f'{k[0]}:{k[1]}')
         cat_desc_avg['redundant_toks'].append(sum(df.redundant_toks))
         cat_desc_avg['total_toks'].append(sum(df.total_tokens))
         cat_desc_avg['avg_txt_len'].append(np.average(df.avg_txt_len))
         cat_desc_avg['macro_avg'].append(np.average(df.avg_diff_ratio))
-        
+       
         d_r = list(chain.from_iterable(df.diff_ratios))
         cat_desc_avg['micro_avg'].append(np.average(d_r))
         cat_desc_avg['num_instances'].append(len(d_r))
         # micro avgs of median / iqr
+        # rg avgs
         rg_rec = list(chain.from_iterable(df.rg_recall))
         rg_prec = list(chain.from_iterable(df.rg_precision))
-        cat_desc_avg['rg_recall_avg'].append(np.average(rg_rec))
-        cat_desc_avg['rg_recall_med'].append(np.median(rg_rec))
-        cat_desc_avg['rg_recall_iqr'].append(np.subtract(*np.percentile(rg_rec, [75, 25])))
-        cat_desc_avg['rg_precision_avg'].append(np.average(rg_prec))
-        cat_desc_avg['rg_precision_med'].append(np.median(rg_prec))
-        cat_desc_avg['rg_precision_iqr'].append(np.subtract(*np.percentile(rg_prec, [75, 25])))
-        
+        cat_desc_avg['rg_rec_avg'].append(np.average(rg_rec))
+        cat_desc_avg['rg_rec_med'].append(np.median(rg_rec))
+        cat_desc_avg['rg_rec_iqr'].append(np.subtract(*np.percentile(rg_rec, [75, 25])))
+        cat_desc_avg['rg_prec_avg'].append(np.average(rg_prec))
+        cat_desc_avg['rg_prec_med'].append(np.median(rg_prec))
+        cat_desc_avg['rg_prec_iqr'].append(np.subtract(*np.percentile(rg_prec, [75, 25])))
+        # bs avgs
         bs_rec = list(chain.from_iterable(df.bs_recall))
         bs_prec = list(chain.from_iterable(df.bs_precision))
-        cat_desc_avg['bs_recall_avg'].append(np.average(bs_rec))
-        cat_desc_avg['bs_recall_med'].append(np.median(bs_rec))
-        cat_desc_avg['bs_recall_iqr'].append(np.subtract(*np.percentile(bs_rec, [75, 25])))
-        cat_desc_avg['bs_precision_avg'].append(np.average(bs_prec))
-        cat_desc_avg['bs_precision_med'].append(np.median(bs_prec))
-        cat_desc_avg['bs_precision_iqr'].append(np.subtract(*np.percentile(bs_prec, [75, 25])))
+        cat_desc_avg['bs_rec_avg'].append(np.average(bs_rec))
+        cat_desc_avg['bs_rec_med'].append(np.median(bs_rec))
+        cat_desc_avg['bs_rec_iqr'].append(np.subtract(*np.percentile(bs_rec, [75, 25])))
+        cat_desc_avg['bs_prec_avg'].append(np.average(bs_prec))
+        cat_desc_avg['bs_prec_med'].append(np.median(bs_prec))
+        cat_desc_avg['bs_prec_iqr'].append(np.subtract(*np.percentile(bs_prec, [75, 25])))
+       
     group_avgs = pd.DataFrame(cat_desc_avg)
     group_avgs = group_avgs[~group_avgs.cat_desc.str.contains('Discharge summary')]
     group_avgs = group_avgs[group_avgs['num_instances'] > 5]
