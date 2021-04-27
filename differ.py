@@ -8,6 +8,8 @@ import pandas as pd
 from datasets import list_metrics, load_metric
 from collections import defaultdict
 from itertools import chain
+import torch
+from tqdm import tqdm
 
 
 try:
@@ -113,9 +115,12 @@ def compute_sequential_diff_metrics(notes: pd.DataFrame, sort_cols=['hadm_id', '
     internote_sort_cols = sort_cols
     internote_group_cols = groupby_cols
     results = defaultdict(list)
-    rouge_metric = load_metric('rouge')
-    for k, g in notes.groupby(internote_group_cols):
-        bert_metric = load_metric('bertscore')
+    import os;print(os.getcwd())
+    rouge_metric = load_metric('./rouge.py')
+    bert_metric = load_metric('./bertscore.py')
+    print(notes.columns)
+    notes = notes.sort_values(sort_cols)
+    for k, g in tqdm(notes.groupby(internote_group_cols)):
         if g.shape[0] > 1:
             ratios, std_devs, max_ratios, min_ratios, redundant_toks, total_tokens = [], [], [], [], [], []
             for i in range(len(g.text.tolist()) - 1):
@@ -139,11 +144,11 @@ def compute_sequential_diff_metrics(notes: pd.DataFrame, sort_cols=['hadm_id', '
             results['avg_txt_len'].append(sum(txt_lens) / len(txt_lens))
             results['hadm_id'].append(k[0])
             results['category'].append(k[1])
-            results['description'].append(k[2])
+            results['description'].append(k[2] if len(k) == 1 else '')
             # compute batched summarisation metrics
             rougeL = rouge_metric.compute(rouge_types=['rougeL'], use_agregator=False)['rougeL']
             try:
-                bert_scores = bert_metric.compute(lang='en', rescale_with_baseline=True, model_type='xlnet-base-cased')
+                bert_scores = bert_metric.compute(lang='en', rescale_with_baseline=True, model_type='./xlnet-base-cased')
                 _compute_bert_score_stats(bert_scores, 'recall', results)
                 _compute_bert_score_stats(bert_scores, 'precision', results)
             except Exception as e:
@@ -153,6 +158,7 @@ def compute_sequential_diff_metrics(notes: pd.DataFrame, sort_cols=['hadm_id', '
                 _add_nan_bert_scores('recall',  results)
             _compute_rouge_stats(rougeL, 'recall', results)
             _compute_rouge_stats(rougeL, 'precision', results)
+            torch.cuda.empty_cache()
            
     return pd.DataFrame(results)
 
@@ -164,7 +170,7 @@ def _compute_rouge_stats(scores: list, prop: str, results: dict):
     results[f'rg_{prop}_iqr'].append(np.subtract(*np.percentile(measure, [75, 25])))
 
 def _compute_bert_score_stats(scores: list, prop: str, results):
-    results[f'bs_{prop}'].append(scores[prop])
+    results[f'bs_{prop}'].append(scores[prop].detach().cpu().numpy())
     results[f'bs_{prop}_avg'].append(np.average(scores[prop]))
     results[f'bs_{prop}_med'].append(np.median(scores[prop]))
     results[f'bs_{prop}_iqr'].append(np.subtract(*np.percentile(scores[prop], [75, 25])))
@@ -214,7 +220,7 @@ def compute_avgs(results_df: pd.DataFrame) -> pd.DataFrame:
         cat_desc_avg['total_toks'].append(sum(df.total_tokens))
         cat_desc_avg['avg_txt_len'].append(np.average(df.avg_txt_len))
         cat_desc_avg['macro_avg'].append(np.average(df.avg_diff_ratio))
-       
+        
         d_r = list(chain.from_iterable(df.diff_ratios))
         cat_desc_avg['micro_avg'].append(np.average(d_r))
         cat_desc_avg['num_instances'].append(len(d_r))
@@ -237,7 +243,7 @@ def compute_avgs(results_df: pd.DataFrame) -> pd.DataFrame:
         cat_desc_avg['bs_prec_avg'].append(np.average(bs_prec))
         cat_desc_avg['bs_prec_med'].append(np.median(bs_prec))
         cat_desc_avg['bs_prec_iqr'].append(np.subtract(*np.percentile(bs_prec, [75, 25])))
-       
+        
     group_avgs = pd.DataFrame(cat_desc_avg)
     group_avgs = group_avgs[~group_avgs.cat_desc.str.contains('Discharge summary')]
     group_avgs = group_avgs[group_avgs['num_instances'] > 5]
