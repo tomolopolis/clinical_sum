@@ -18,3 +18,5 @@ $ pip install -r requirements.txt
 
 - Download / prepare MIMIC-III. Access available [here](https://mimic.physionet.org/gettingstarted/access/)
 - Run each notebook
+
+Data is all stored as indicated in ../data/
