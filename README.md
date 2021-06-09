@@ -1,4 +1,4 @@
-# Experiments for Estimating Redundnacy in Clinical Texts
+# Experiments for Estimating Redundancy in Clinical Texts
 
 There are two notebooks:
 
@@ -8,8 +8,9 @@ There are two notebooks:
 
 To reproduce results of the MIMIC-III experiments:
 
-- Install the dependencies, (stronly recommend using a virtualenv / venv / conda env).
+- Install the dependencies, (strongly recommend using a virtualenv / venv / conda env).
 
+For example:
 <pre>
 $ conda create -n clinc_redun python=3.7
 $ conda activate clinc_redun
